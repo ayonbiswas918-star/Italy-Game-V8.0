@@ -390,14 +390,8 @@ function openBidPanel(current,canPass,hand){
   });
   const hp=$('hp-cards');hp.innerHTML='';
   if(hand)hand.forEach(c=>hp.appendChild(mkCard(c)));
-  // Show/hide discard button inside bid panel
-  setDiscardBtn(canDiscardAll);
   showOv('ov-bid');sfxBid();
-  // Always restart bid timer fresh (30s) when panel opens
-  stopBidTimer();
   startBidTimer(()=>{if(canPass)placeBid('nil');else placeBid(current>0?current+1:7);});
-  // Show toast if player can discard again
-  if(canDiscardAll) toast('🔄 No face card or Ace — you can discard!', 2500);
 }
 function placeBid(bid){stopBidTimer();socket.emit('makeBid',{bid});hideOv('ov-bid');}
 
@@ -499,27 +493,17 @@ socket.on('playerReconnected',({position,name,players:ps})=>{
 // Lobby
 socket.on('roomCreated',({code,position,players:ps,isHost,emojis})=>{
   myPos=position;amHost=isHost;players=ps;applyEmojis(emojis);currentRoomCode=code;
-  showScreen('screen-waiting');$('disp-code').textContent=code;renderSeats(ps);toast(`Room: ${code}`);
+  $('disp-code').textContent=code;renderSeats(ps);showScreen('screen-waiting');toast(`Room: ${code}`);
 });
 socket.on('roomJoined',({code,position,players:ps,isHost,emojis})=>{
   myPos=position;amHost=isHost;players=ps;applyEmojis(emojis);currentRoomCode=code;
-  $('disp-code').textContent=code;
-  showScreen('screen-waiting');  // show screen FIRST so grid is visible
-  renderSeats(ps);
-  toast(`Joined ${code}!`);
+  $('disp-code').textContent=code;renderSeats(ps);showScreen('screen-waiting');toast(`Joined ${code}!`);
 });
 socket.on('playerJoined',({players:ps,emojis})=>{players=ps;applyEmojis(emojis);renderSeats(ps);sfxDeal();toast(`${ps[ps.length-1].name} joined!`);});
 socket.on('allReady',({players:ps,emojis})=>{players=ps;applyEmojis(emojis);renderSeats(ps);toast(amHost?'All 4 ready! Start the game.':'All 4 players ready!');});
 socket.on('targetSet',({target})=>{matchTarget=target;$('t30')?.classList.toggle('sel',target===30);$('t50')?.classList.toggle('sel',target===50);toast(`Target: ${target} pts`);});
 socket.on('yourPosition',({position})=>{myPos=position;renderSeats(players);});
-socket.on('seatsUpdated',({players:ps,emojis})=>{
-  players=ps;applyEmojis(emojis);
-  // Make sure we're on waiting screen (could be triggered right after roomJoined)
-  const activeScreen=document.querySelector('.screen.active');
-  if(!activeScreen||activeScreen.id==='screen-lobby') showScreen('screen-waiting');
-  renderSeats(ps);
-  sfxDeal();
-});
+socket.on('seatsUpdated',({players:ps,emojis})=>{players=ps;applyEmojis(emojis);renderSeats(ps);toast('Seats updated!');sfxDeal();});
 socket.on('gameReset',({players:ps})=>{
   players=ps;myHand=[];validIds=[];isMyTurn=false;canDiscardAll=false;
   trumpSuit=null;trumpRevealed=false;scores={A:0,B:0};bidLog=[];stopBidTimer();
@@ -547,44 +531,24 @@ socket.on('roundBegin',({roundNumber:rn,scores:sc,players:ps,matchTarget:mt,
   if(!isReconnect){ showDealAnim(dealerName,firstActiveName);sfxDeal(); }
 });
 
-socket.on('handUpdate',({hand,dealPhase,isRedeal,canDiscardAgain})=>{
+socket.on('handUpdate',({hand,dealPhase,isRedeal})=>{
   myHand=hand;handCounts[myPos]=hand.length;
-
-  if(isRedeal){
-    // After a discard redeal: server tells us if we can discard again
-    // canDiscardAll will be properly set when yourCallingTurn arrives
-    // Just update the hand display
-    canDiscardAll = !!canDiscardAgain;
-    renderHand(true); // animate the new cards
-    return;
+  // Only the callingStart player (first card receiver) can discard, and only if no A/J/Q/K
+  const isFirstReceiver=(window._callingStartPos===myPos);
+  const hasFaceOrAce=hand.some(c=>['A','J','Q','K'].includes(c.rank));
+  // Allow discard as long as: no ace/face, is first receiver, 5 cards in hand
+  if(hand.length===5&&!hasFaceOrAce&&isFirstReceiver&&(dealPhase==='initial'||isRedeal)){
+    canDiscardAll=true;
+  }else{
+    canDiscardAll=false;
   }
-
-  // Initial 5-card deal: check if callingStart with no face/ace
-  if(dealPhase==='initial'){
-    const isFirstReceiver=(window._callingStartPos===myPos);
-    const hasFaceOrAce=hand.some(c=>['A','J','Q','K'].includes(c.rank));
-    canDiscardAll = isFirstReceiver && hand.length===5 && !hasFaceOrAce;
-    renderHand(true);
-    return;
-  }
-
-  // Normal hand update (e.g. after playing a card)
-  renderHand(false);
+  renderHand((dealPhase==='initial'||isRedeal));
 });
 
 // Calling
 socket.on('callingStarted',({callerPos,callerName})=>{setActiveAv(callerPos);$('status').textContent=`${callerName} is deciding bid…`;});
 socket.on('callingTurn',({callerPos,callerName,currentBid:cb})=>{currentBid=cb;setActiveAv(callerPos);$('status').textContent=`${callerName} is deciding bid…`;});
-socket.on('yourCallingTurn',({currentBid:cb,canPass,hand,afterDiscard,canDiscardAgain})=>{
-  currentBid=cb;
-  if(hand&&hand.length>0) myHand=hand;
-  // After discard: update canDiscardAll from server truth
-  if(afterDiscard){
-    canDiscardAll = !!canDiscardAgain;
-  }
-  // openBidPanel always stops+restarts timer (it calls stopBidTimer then startBidTimer)
-  openBidPanel(cb,canPass,myHand);
-});
+socket.on('yourCallingTurn',({currentBid:cb,canPass,hand})=>{currentBid=cb;openBidPanel(cb,canPass,hand);});
 socket.on('bidEvent',({type,pos,name,bid})=>{
   if(type==='pass'){bidLog.push({name,bid:'nil'});toast(`${name} passed`);$('status').textContent=`${name} passed`;}
   else if(type==='bid'){bidLog.push({name,bid});currentBid=bid;currentBidder=pos;toast(`${name} bid ${bid}!`);sfxBid();$('status').textContent=`${name} bid ${bid}`;}
@@ -606,8 +570,9 @@ socket.on('callingDone',({bidder,bidderName,bid})=>{
 socket.on('playerDiscarded',({pos,name})=>{
   if(pos!==myPos) toast(`${name} discarded their hand and got new cards`);
 });
-socket.on('discardResult',({hasFace})=>{
-  // Toast handled by yourCallingTurn now via canDiscardAgain
+socket.on('discardResult',({newHand,hasFace})=>{
+  if(hasFace) toast('New hand has a face card / Ace ✅');
+  else toast('Still no face card or Ace — you can discard again!');
 });
 
 // Dealing
